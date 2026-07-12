@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // src/cli.ts
-import "dotenv/config";
+import { config as dotenvConfig } from "dotenv";
+import { join } from "node:path";
+import { homedir } from "node:os";
+dotenvConfig({ path: join(homedir(), ".crate", ".env") });
 import { CrateAgent } from "./agent/index.js";
 import { createApp } from "./ui/app.js";
 import { resolveModel } from "./utils/config.js";
@@ -67,6 +70,7 @@ async function main(): Promise<void> {
     : null;
 
   const app = createApp(agent, { model: parsed.model });
+  process.stdout.write("\x1b[2J\x1b[H"); // Clear terminal before TUI renders
   app.start();
 }
 

@@ -2,11 +2,12 @@
 /**
  * YouTube MCP server — audio playback via yt-dlp + mpv.
  *
- * 4 tools:
- *   1. search_tracks — YouTube search (Data API v3 or yt-dlp fallback)
- *   2. play_track — Search + play via mpv subprocess
- *   3. play_playlist — M3U generation → mpv + yt-dlp
- *   4. player_control — IPC to mpv (pause, resume, next, stop, etc.)
+ * 5 tools:
+ *   1. search_tracks      — YouTube search (Data API v3 or yt-dlp fallback)
+ *   2. play_track         — Search + play via mpv subprocess
+ *   3. play_playlist      — M3U generation → mpv + yt-dlp
+ *   4. player_control     — IPC to mpv (pause, resume, next, stop, etc.)
+ *   5. get_rights_holder  — Fetch distributor/label/release info from Topic channels
  */
 
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
@@ -194,6 +195,109 @@ export async function searchTracksHandler(args: {
       });
 
     return toolResult({ query: args.query, result_count: results.length, results });
+  } catch (error) {
+    return toolError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// get_rights_holder handler
+// ---------------------------------------------------------------------------
+
+export async function getRightsHolderHandler(args: {
+  artist: string;
+  track: string;
+}): Promise<ToolResult> {
+  const apiKey = process.env["YOUTUBE_API_KEY"];
+  if (!apiKey) {
+    return toolError(new Error("YOUTUBE_API_KEY is required for this tool."));
+  }
+
+  try {
+    const query = `${args.artist} - Topic ${args.track}`;
+    const searchParams = new URLSearchParams({
+      part: "snippet",
+      q: query,
+      type: "video",
+      maxResults: "10",
+      key: apiKey,
+    });
+
+    const searchController = new AbortController();
+    const searchTimer = setTimeout(() => searchController.abort(), FETCH_TIMEOUT_MS);
+    let searchResp: Response;
+    try {
+      searchResp = await fetch(`${YOUTUBE_API_BASE}/search?${searchParams}`, { signal: searchController.signal });
+    } finally {
+      clearTimeout(searchTimer);
+    }
+    if (!searchResp.ok) {
+      throw new Error(`YouTube API error: ${searchResp.status}`);
+    }
+    const searchData = await searchResp.json() as any;
+
+    // Filter to channels ending with "- Topic"
+    const topicItems = (searchData.items ?? []).filter((item: any) =>
+      (item.snippet?.channelTitle ?? "").endsWith("- Topic"),
+    );
+
+    if (topicItems.length === 0) {
+      return toolResult({
+        error: "No Topic channel video found for this artist and track.",
+        query,
+      });
+    }
+
+    const videoId: string = topicItems[0].id?.videoId;
+
+    // Fetch video snippet for description
+    const videoParams = new URLSearchParams({
+      part: "snippet",
+      id: videoId,
+      key: apiKey,
+    });
+    const videoController = new AbortController();
+    const videoTimer = setTimeout(() => videoController.abort(), FETCH_TIMEOUT_MS);
+    let videoResp: Response;
+    try {
+      videoResp = await fetch(`${YOUTUBE_API_BASE}/videos?${videoParams}`, { signal: videoController.signal });
+    } finally {
+      clearTimeout(videoTimer);
+    }
+    if (!videoResp.ok) {
+      throw new Error(`YouTube API error fetching video details: ${videoResp.status}`);
+    }
+    const videoData = await videoResp.json() as any;
+    const description: string = videoData.items?.[0]?.snippet?.description ?? "";
+
+    // Parse structured fields from description
+    const lines = description.split("\n");
+    const nonEmptyLines = lines.filter((l: string) => l.trim().length > 0);
+
+    let distributor: string | undefined;
+    let rights_holder: string | undefined;
+    let release_date: string | undefined;
+    const album: string | undefined = nonEmptyLines[2]?.trim();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("Provided to YouTube by")) {
+        distributor = trimmed.replace(/^Provided to YouTube by\s*/, "").trim();
+      } else if (trimmed.startsWith("℗")) {
+        rights_holder = trimmed;
+      } else if (trimmed.startsWith("Released on:")) {
+        release_date = trimmed.replace(/^Released on:\s*/, "").trim();
+      }
+    }
+
+    return toolResult({
+      distributor,
+      rights_holder,
+      release_date,
+      album,
+      youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
+      youtube_music_url: `https://music.youtube.com/watch?v=${videoId}`,
+    });
   } catch (error) {
     return toolError(error);
   }
@@ -542,11 +646,23 @@ const playerControl = tool(
   playerControlHandler,
 );
 
+const getRightsHolder = tool(
+  "get_rights_holder",
+  "Fetch distributor, rights holder, release date, and album name for a track by looking up " +
+    "its YouTube Music Topic channel video. Requires YOUTUBE_API_KEY. " +
+    "Returns distributor, rights_holder, release_date, album, youtube_url, and youtube_music_url.",
+  {
+    artist: z.string().max(200).describe("Artist name (e.g. 'Radiohead')"),
+    track: z.string().max(200).describe("Track title (e.g. 'Creep')"),
+  },
+  getRightsHolderHandler,
+);
+
 // ---------------------------------------------------------------------------
 // Server Export
 // ---------------------------------------------------------------------------
 
-export const youtubeTools = [searchTracks, playTrack, playPlaylist, playerControl];
+export const youtubeTools = [searchTracks, playTrack, playPlaylist, playerControl, getRightsHolder];
 
 export const youtubeServer = createSdkMcpServer({
   name: "youtube",

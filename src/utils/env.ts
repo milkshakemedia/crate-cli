@@ -1,6 +1,7 @@
 // src/utils/env.ts — .env file read/write utilities
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { join } from "path";
+import { homedir } from "os";
 
 export interface EnvLine {
   raw: string;
@@ -14,9 +15,9 @@ export interface EnvFile {
   vars: Map<string, { value: string; lineIndex: number; commented: boolean }>;
 }
 
-/** Resolve the .env file path (project root). */
+/** Resolve the .env file path (~/.crate/.env). */
 export function getEnvPath(): string {
-  return resolve(process.cwd(), ".env");
+  return join(homedir(), ".crate", ".env");
 }
 
 /** Parse a .env file, preserving comments and blank lines. */

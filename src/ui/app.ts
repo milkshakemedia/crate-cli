@@ -706,8 +706,8 @@ export function createApp(agent: CrateAgent | null, options?: AppOptions): TUI {
 
   const needsAnthropicKey = !process.env.ANTHROPIC_API_KEY;
 
-  // Welcome message (onboarding on first run or missing key, normal welcome after)
-  if (isFirstRun() || needsAnthropicKey) {
+  if (isFirstRun()) {
+    // First launch — show full onboarding wizard
     showOnboarding(tui, needsAnthropicKey, (result: OnboardingResult) => {
       if (result.anthropicKeySet && !currentAgent) {
         // Anthropic key was just entered — construct agent now
@@ -718,8 +718,20 @@ export function createApp(agent: CrateAgent | null, options?: AppOptions): TUI {
       }
       // Show welcome after wizard completes
       addChildBeforeEditor(tui, new Text(WELCOME_TEXT, 1, 1));
+      tui.setFocus(editor);
       tui.requestRender();
     });
+  } else if (needsAnthropicKey) {
+    // Returning user with missing key — show inline warning, not the blocking wizard
+    tui.addChild(
+      new Text(
+        WELCOME_TEXT +
+          "\n" +
+          chalk.yellow("⚠  ANTHROPIC_API_KEY not set — use /keys to add it."),
+        1,
+        1,
+      ),
+    );
   } else {
     tui.addChild(new Text(WELCOME_TEXT, 1, 1));
   }
@@ -1047,7 +1059,9 @@ export function createApp(agent: CrateAgent | null, options?: AppOptions): TUI {
   const nowPlayingPoller = new NowPlayingPoller(tui, nowPlayingBar);
   tui.addChild(nowPlayingBar);
   tui.addChild(editor);
-  tui.setFocus(editor);
+  if (!tui.hasOverlay()) {
+    tui.setFocus(editor);
+  }
   nowPlayingPoller.start();
 
   return tui;
